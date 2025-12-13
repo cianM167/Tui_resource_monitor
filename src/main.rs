@@ -1,19 +1,26 @@
-use std::io;
+use std::{io, sync::mpsc, thread, time::Duration};
 use sysinfo::System;
 use crossterm::{event::{KeyCode, KeyEvent}, terminal};
 use ratatui::{DefaultTerminal, Frame, layout::{Constraint, Layout, Rect}, style::{Color, Style, Stylize}, symbols::{block, border}, text::Line, widgets::{Block, Gauge, Widget}};
 
+enum Event {
+    Input(crossterm::event::KeyEvent),
+    Progress(f64),
+
+}
+
 pub struct App {
     exit: bool,
     progress_bar_colour: Color,
+    background_progress: f64,
 }
 
 impl App {
-    fn run (&mut self, terminal: &mut DefaultTerminal) -> io::Result<()>{    
+    fn run (&mut self, terminal: &mut DefaultTerminal, rx: mpsc::Receiver<Event>) -> io::Result<()>{    
         while !self.exit {
-            match crossterm::event::read()? {
-                crossterm::event::Event::Key(KeyEvent) => self.handle_key_event(KeyEvent)?,
-                _ => ()
+            match rx.recv().unwrap() {
+                Event::Input(key_event) => self.handle_key_event(key_event)?,
+                Event::Progress(progress) => self.background_progress = progress,
             }
             terminal.draw(|frame| self.draw(frame))?;
         }
@@ -63,8 +70,8 @@ impl Widget for &App {
             let progress_bar = Gauge::default()
                 .gauge_style(Style::default().fg(self.progress_bar_colour))
                 .block(block)
-                .label(format!("Process 1: 50%"))
-                .ratio(0.5);
+                .label(format!("Process 1: {:.2}%", self.background_progress * 100_f64))
+                .ratio(self.background_progress);
 
             progress_bar.render(Rect {
                 x: gauge_area.left(),
@@ -76,6 +83,26 @@ impl Widget for &App {
                 );
 
         }
+}
+
+fn handle_input_events(tx: mpsc::Sender<Event>) {
+    loop {
+        match crossterm::event::read().unwrap() {
+            crossterm::event::Event::Key(Key_event) => tx.send(Event::Input(Key_event)).unwrap(),
+            _ => ()
+        }
+    }
+}
+
+fn run_background_thread(tx: mpsc::Sender<Event>) {
+    let mut progress = 0_f64;
+    let increment = 0.01_f64;
+    loop {
+        thread::sleep(Duration::from_millis(100));
+        progress += increment;
+        progress = progress.min(1_f64);
+        tx.send(Event::Progress(progress)).unwrap();
+    }
 }
 
 fn cpu_data() {
@@ -99,9 +126,22 @@ fn main() -> io::Result<()> {
     let mut app = App { 
         exit: false,
         progress_bar_colour: Color::Cyan,
+        background_progress: 0_f64,
     };
 
-    let app_result = app.run(&mut terminal);
+    let (event_tx, event_rx) = mpsc::channel::<Event>();
+
+    let tx_to_input_events = event_tx.clone();
+    thread::spawn(move || {
+        handle_input_events(tx_to_input_events);
+    });
+
+    let tx_to_progress_events = event_tx;
+    thread::spawn(move || {
+        run_background_thread(tx_to_progress_events);
+    });
+
+    let app_result = app.run(&mut terminal, event_rx);
 
     ratatui::restore();
     app_result
