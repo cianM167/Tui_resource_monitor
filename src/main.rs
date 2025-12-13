@@ -5,14 +5,13 @@ use ratatui::{DefaultTerminal, Frame, layout::{Constraint, Layout, Rect}, style:
 
 enum Event {
     Input(crossterm::event::KeyEvent),
-    Progress(f64),
-
+    Progress(Vec<f64>),
 }
 
 pub struct App {
     exit: bool,
     progress_bar_colour: Color,
-    background_progress: f64,
+    background_progress: Vec<f64>,
 }
 
 impl App {
@@ -63,15 +62,15 @@ impl Widget for &App {
             ]).centered();
 
             let block = Block::bordered()
-                .title(Line::from(" Background processes "))
+                .title(Line::from(" Cpu utilization "))
                 .title_bottom(instructions)
                 .border_set(border::THICK);
 
             let progress_bar = Gauge::default()
                 .gauge_style(Style::default().fg(self.progress_bar_colour))
                 .block(block)
-                .label(format!("Process 1: {:.2}%", self.background_progress * 100_f64))
-                .ratio(self.background_progress);
+                .label(format!("Cpu 1: {:.2}%", self.background_progress[0]))
+                .ratio((self.background_progress[0]) / 100_f64);
 
             progress_bar.render(Rect {
                 x: gauge_area.left(),
@@ -95,14 +94,24 @@ fn handle_input_events(tx: mpsc::Sender<Event>) {
 }
 
 fn run_background_thread(tx: mpsc::Sender<Event>) {
-    let mut progress = 0_f64;
-    let increment = 0.01_f64;
+    let mut sys = System::new();
+    //let cores = sys.cpus();
+    //println!("{:?}", cores.len());
+    let mut cores_usages: Vec<f64> = vec![0_f64; 12];
+
+
     loop {
-        thread::sleep(Duration::from_millis(100));
-        progress += increment;
-        progress = progress.min(1_f64);
-        tx.send(Event::Progress(progress)).unwrap();
+        sys.refresh_cpu_usage(); // Refreshing CPU usage.
+        for (i, cpu) in sys.cpus().iter().enumerate() {
+            cores_usages[i] = cpu.cpu_usage() as f64;
+            //println!("cpu_{}:{}% ", i , cpu.cpu_usage());
+        }
+        // Sleeping to let time for the system to run for long
+        // enough to have useful information.
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        tx.send(Event::Progress(cores_usages.clone())).unwrap();
     }
+
 }
 
 fn cpu_data() {
@@ -111,6 +120,7 @@ fn cpu_data() {
     loop {
         sys.refresh_cpu_usage(); // Refreshing CPU usage.
         for (i, cpu) in sys.cpus().iter().enumerate() {
+
             println!("cpu_{}:{}% ", i , cpu.cpu_usage());
         }
         // Sleeping to let time for the system to run for long
@@ -126,7 +136,7 @@ fn main() -> io::Result<()> {
     let mut app = App { 
         exit: false,
         progress_bar_colour: Color::Cyan,
-        background_progress: 0_f64,
+        background_progress: vec![0_f64; 4],
     };
 
     let (event_tx, event_rx) = mpsc::channel::<Event>();
