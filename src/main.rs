@@ -13,11 +13,18 @@ pub struct App {
     exit: bool,
     progress_bar_colour: Color,
     background_progress: Vec<f64>,
+    cpu_brand: String,
 }
 
 impl App {
     fn new() -> Self {
-        Self { exit: false, progress_bar_colour: Color::Cyan, background_progress: vec![] }
+        let mut sys = System::new_all();
+        Self { 
+            exit: false, 
+            progress_bar_colour: Color::Cyan, 
+            background_progress: vec![],
+            cpu_brand: sys.cpus()[0].brand().to_string(),
+        }
     }
 
     fn run (&mut self, terminal: &mut DefaultTerminal, rx: mpsc::Receiver<Event>) -> io::Result<()>{    
@@ -41,7 +48,7 @@ impl App {
         .areas(frame.area());
 
         frame.render_widget("Monitor".bold().into_centered_line(), title);
-        frame.render_widget(vertical_barchart(&self.background_progress), vertical);
+        frame.render_widget(vertical_barchart(&self.background_progress, self.cpu_brand.clone()), vertical);
     }
 
     fn handle_key_event(&mut self, key_event: crossterm::event::KeyEvent) -> io::Result<()> {
@@ -61,17 +68,16 @@ fn handle_input_events(tx: mpsc::Sender<Event>) {
     }
 }
 
-fn vertical_barchart(temperatures: &[f64]) -> BarChart {
+fn vertical_barchart(temperatures: &[f64], cpu_brand: String) -> BarChart {
     //make vec of bars
     let bars: Vec<Bar> = temperatures
         .iter()
         .enumerate()
         .map(|(cpu, value)| vertical_bar(cpu, value))
         .collect();
-    let title = Line::from("Cpu:").left_aligned();
 
     let block = Block::bordered()
-        .title(Line::from(" Cpu utilization "))
+        .title(Line::from(format!(" {}: ", cpu_brand)))
         .border_set(border::THICK);
 
     BarChart::default()
@@ -88,16 +94,17 @@ fn vertical_bar(cpu: usize, usage: &f64) -> Bar {
 }
 
 fn run_background_thread(tx: mpsc::Sender<Event>) {
-    let mut sys = System::new();
+    let mut sys = System::new_all();
+    let alpha = 0.2;
     //let cores = sys.cpus();
     //println!("{:?}", cores.len());
-
+    let mut cores_usages: Vec<f64> = vec![0_f64; sys.cpus().len()];
 
     loop {
-        let mut cores_usages: Vec<f64> = vec![];
         sys.refresh_cpu_usage(); // Refreshing CPU usage.
-        for cpu in sys.cpus() {
-            cores_usages.push(cpu.cpu_usage() as f64);
+        for (i, cpu) in sys.cpus().iter().enumerate() {
+
+            cores_usages[i] = (alpha * cpu.cpu_usage() as f64) + (1.0 - alpha) * cores_usages[i];
             //println!("cpu_{}:{}% ", i , cpu.cpu_usage());
         }
         // Sleeping to let time for the system to run for long
