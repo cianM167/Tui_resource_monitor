@@ -1,4 +1,4 @@
-use std::{io, sync::mpsc, thread, time::Duration};
+use std::{io::{self, Split}, sync::mpsc, thread, time::Duration};
 use sysinfo::System;
 use color_eyre::{Result, owo_colors::OwoColorize};
 use crossterm::{event::{KeyCode, KeyEvent}, terminal};
@@ -11,7 +11,7 @@ enum Event {
 
 pub struct App {
     exit: bool,
-    progress_bar_colour: Color,
+    cpu_colour: Color,
     background_progress: Vec<f64>,
     cpu_brand: String,
 }
@@ -19,11 +19,18 @@ pub struct App {
 impl App {
     fn new() -> Self {
         let mut sys = System::new_all();
+        let cpu_brand = sys.cpus()[0].brand().to_string();
+        let cpu_colour: Color;
+        if cpu_brand.contains("AMD") {
+            cpu_colour = Color::Rgb(252, 119, 3);
+        } else {
+            cpu_colour = Color::Cyan;
+        }
         Self { 
             exit: false, 
-            progress_bar_colour: Color::Cyan, 
+            cpu_colour: cpu_colour, 
             background_progress: vec![],
-            cpu_brand: sys.cpus()[0].brand().to_string(),
+            cpu_brand: cpu_brand,
         }
     }
 
@@ -47,8 +54,17 @@ impl App {
         .spacing(1)
         .areas(frame.area());
 
+        let inner_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(vec![
+                Constraint::Percentage(75),
+                Constraint::Percentage(25),
+            ])
+            .split(vertical);
+
         frame.render_widget("Monitor".bold().into_centered_line(), title);
-        frame.render_widget(vertical_barchart(&self.background_progress, self.cpu_brand.clone()), vertical);
+        frame.render_widget(vertical_barchart(&self.background_progress, self.cpu_brand.clone(), self.cpu_colour.clone()), inner_layout[0]);
+        frame.render_widget(Gauge::default(), inner_layout[1]);
     }
 
     fn handle_key_event(&mut self, key_event: crossterm::event::KeyEvent) -> io::Result<()> {
@@ -68,12 +84,16 @@ fn handle_input_events(tx: mpsc::Sender<Event>) {
     }
 }
 
-fn vertical_barchart(temperatures: &[f64], cpu_brand: String) -> BarChart {
+fn memory_gauge() {
+    
+}
+
+fn vertical_barchart(temperatures: &[f64], cpu_brand: String, colour: Color) -> BarChart {
     //make vec of bars
     let bars: Vec<Bar> = temperatures
         .iter()
         .enumerate()
-        .map(|(cpu, value)| vertical_bar(cpu, value))
+        .map(|(cpu, value)| vertical_bar(cpu, value, colour))
         .collect();
 
     let block = Block::bordered()
@@ -86,9 +106,9 @@ fn vertical_barchart(temperatures: &[f64], cpu_brand: String) -> BarChart {
         .bar_width(5)
 }
 
-fn vertical_bar(cpu: usize, usage: &f64) -> Bar {
+fn vertical_bar(cpu: usize, usage: &f64, colour: Color) -> Bar {
     Bar::default()
-        .style(Style::default().fg(Color::Cyan))
+        .style(Style::default().fg(colour))
         .value(u64::from(*usage as u64))
         .label(Line::from(format!("Cpu{}:", cpu+1)))
 }
