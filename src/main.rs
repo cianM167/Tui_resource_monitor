@@ -1,7 +1,8 @@
 use std::{io, sync::mpsc, thread, time::Duration};
 use sysinfo::System;
+use color_eyre::{Result, owo_colors::OwoColorize};
 use crossterm::{event::{KeyCode, KeyEvent}, terminal};
-use ratatui::{DefaultTerminal, Frame, layout::{Constraint, Layout, Rect}, style::{Color, Style, Stylize}, symbols::{block, border}, text::Line, widgets::{Block, Gauge, Widget}};
+use ratatui::{DefaultTerminal, Frame, layout::{Constraint, Direction, Layout, Rect}, style::{Color, Style, Stylize}, symbols::{bar, block, border}, text::Line, widgets::{Bar, BarChart, BarGroup, Block, Gauge, Widget}};
 
 enum Event {
     Input(crossterm::event::KeyEvent),
@@ -15,6 +16,10 @@ pub struct App {
 }
 
 impl App {
+    fn new() -> Self {
+        Self { exit: false, progress_bar_colour: Color::Cyan, background_progress: vec![] }
+    }
+
     fn run (&mut self, terminal: &mut DefaultTerminal, rx: mpsc::Receiver<Event>) -> io::Result<()>{    
         while !self.exit {
             match rx.recv().unwrap() {
@@ -28,7 +33,15 @@ impl App {
     }
 
     fn draw(&self, frame: &mut Frame) {
-        frame.render_widget(self, frame.area());
+        let [title, vertical] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .spacing(1)
+        .areas(frame.area());
+
+        frame.render_widget("Monitor".bold().into_centered_line(), title);
+        frame.render_widget(vertical_barchart(&self.background_progress), vertical);
     }
 
     fn handle_key_event(&mut self, key_event: crossterm::event::KeyEvent) -> io::Result<()> {
@@ -37,51 +50,6 @@ impl App {
         }
         Ok(())
     }
-}
-
-impl Widget for &App {
-    fn render(self, area: ratatui::prelude::Rect, buf: &mut ratatui::prelude::Buffer)
-        where
-            Self: Sized 
-        {
-            let veritcal_layout = 
-                Layout::vertical([Constraint::Percentage(20), Constraint::Percentage(80)]);
-            let [title_area, gauge_area] = veritcal_layout.areas(area);
-            
-            //render title 
-            Line::from("process overview")
-                .bold()
-                .centered()
-                .render(title_area, buf);
-
-            let instructions = Line::from(vec![
-                " Change colour ".into(),
-                "<C>".blue().bold().into(),
-                " Quit".into(),
-                "<Q>".red().bold(),
-            ]).centered();
-
-            let block = Block::bordered()
-                .title(Line::from(" Cpu utilization "))
-                .title_bottom(instructions)
-                .border_set(border::THICK);
-
-            let progress_bar = Gauge::default()
-                .gauge_style(Style::default().fg(self.progress_bar_colour))
-                .block(block)
-                .label(format!("Cpu 1: {:.2}%", self.background_progress[0]))
-                .ratio((self.background_progress[0]) / 100_f64);
-
-            progress_bar.render(Rect {
-                x: gauge_area.left(),
-                y: gauge_area.top(),
-                width: gauge_area.width,
-                height: 3,
-                }, 
-                buf
-                );
-
-        }
 }
 
 fn handle_input_events(tx: mpsc::Sender<Event>) {
@@ -93,22 +61,49 @@ fn handle_input_events(tx: mpsc::Sender<Event>) {
     }
 }
 
+fn vertical_barchart(temperatures: &[f64]) -> BarChart {
+    //make vec of bars
+    let bars: Vec<Bar> = temperatures
+        .iter()
+        .enumerate()
+        .map(|(cpu, value)| vertical_bar(cpu, value))
+        .collect();
+    let title = Line::from("Cpu:").left_aligned();
+
+    let block = Block::bordered()
+        .title(Line::from(" Cpu utilization "))
+        .border_set(border::THICK);
+
+    BarChart::default()
+        .data(BarGroup::default().bars(&bars))
+        .block(block)
+        .bar_width(5)
+}
+
+fn vertical_bar(cpu: usize, usage: &f64) -> Bar {
+    Bar::default()
+        .style(Style::default().fg(Color::Cyan))
+        .value(u64::from(*usage as u64))
+        .label(Line::from(format!("Cpu{}:", cpu+1)))
+}
+
 fn run_background_thread(tx: mpsc::Sender<Event>) {
     let mut sys = System::new();
     //let cores = sys.cpus();
     //println!("{:?}", cores.len());
-    let mut cores_usages: Vec<f64> = vec![0_f64; 12];
 
 
     loop {
+        let mut cores_usages: Vec<f64> = vec![];
         sys.refresh_cpu_usage(); // Refreshing CPU usage.
-        for (i, cpu) in sys.cpus().iter().enumerate() {
-            cores_usages[i] = cpu.cpu_usage() as f64;
+        for cpu in sys.cpus() {
+            cores_usages.push(cpu.cpu_usage() as f64);
             //println!("cpu_{}:{}% ", i , cpu.cpu_usage());
         }
         // Sleeping to let time for the system to run for long
         // enough to have useful information.
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        //println!();
         tx.send(Event::Progress(cores_usages.clone())).unwrap();
     }
 
@@ -131,14 +126,6 @@ fn cpu_data() {
 
 
 fn main() -> io::Result<()> {
-    let mut terminal = ratatui::init();
-
-    let mut app = App { 
-        exit: false,
-        progress_bar_colour: Color::Cyan,
-        background_progress: vec![0_f64; 4],
-    };
-
     let (event_tx, event_rx) = mpsc::channel::<Event>();
 
     let tx_to_input_events = event_tx.clone();
@@ -151,9 +138,16 @@ fn main() -> io::Result<()> {
         run_background_thread(tx_to_progress_events);
     });
 
-    let app_result = app.run(&mut terminal, event_rx);
+    let mut terminal = ratatui::init();
+    let app_result = App::new().run(&mut terminal, event_rx);
 
     ratatui::restore();
     app_result
 
+}
+
+fn temperature_style(value: u8) -> Style {
+    let green = (255.0 * (1.0 - f64::from(value - 50) / 40.0)) as u8;
+    let color = Color::Rgb(255, green, 0);
+    Style::new().fg(color)
 }
